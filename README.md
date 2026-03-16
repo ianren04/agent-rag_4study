@@ -1,383 +1,63 @@
-# RAG_4study_project项目说明
+这是一个面向学习展示的 RAG Agent 开源项目RAG_4study_project，核心是做工业级可用、过程可观测的检索增强生成，方便开发迭代和效果展示，以下是重新整理后的项目说明：
+一、本地部署步骤
+1. 环境准备
 
-Agent的项目记录，方便后续持续更新与展示。
+需要提前装好：Python 3.12 及以上版本；包管理推荐用uv，也可以用原生 pip；需要 Docker 和 Docker Compose 来启动依赖的 Milvus 向量库。
+2. 安装依赖
 
-## 本地部署
+两种安装方式二选一：
 
-### 1) 环境准备
-- Python `3.12+`
-- 包管理建议：`uv`（也支持 `pip`）
-- Docker / Docker Compose（用于启动 Milvus 依赖）
+推荐 uv 方式：在项目根目录执行uv sync完成依赖安装，之后可以用uv run python backend/app.py或者uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload启动服务。
+pip 方式：先创建虚拟环境python -m venv .venv，激活后升级 pip，执行pip install -e .安装依赖，之后用相同命令启动服务即可。
+3. 配置环境变量
 
-### 2) 使用 pyproject 安装依赖
-在项目根目录执行：
+在项目根目录新建.env文件，按照模板填入配置：大模型的 API 密钥、模型名称、接口地址、嵌入模型名称；重排序模型配置（可选，不配置会自动降级）；Milvus 的地址和端口；可选的高德天气 API 密钥（用来做自定义工具演示）。
+4. 启动 Milvus 向量库
 
-```bash
-# 方式 A：推荐（uv）
-uv sync
+项目自带的docker-compose.yml已经配置好了 Milvus 以及依赖的 etcd、minio、管理面板 Attu，执行docker compose up -d就能后台启动，Milvus 默认端口 19530，Attu 管理面板默认端口 8000。
+5. 访问应用
 
-# 运行服务
-uv run python backend/app.py
-# 或
-uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
-```
+Milvus 启动完成后，启动后端应用，就可以浏览器访问了：前端主页地址是http://127.0.0.1:8000/，接口文档地址是http://127.0.0.1:8000/docs。
+二、项目整体介绍
+核心能力
 
-```bash
-# 方式 B：pip
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
+基于 LangChain Agent 做定制化，支持自定义工具；用户上传文档后会做三级滑动窗口分块，仅最小的叶子分块转向量存入 Milvus，父级分块存在本地文档库；自带会话记忆和自动摘要，支持长对话上下文保留。
+整体运行架构：FastAPI 后端 + 纯 Vue3 CDN 单页前端 + Milvus 向量库。
+核心特色 / 创新点
 
-# 运行服务
-python backend/app.py
-# 或
-uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
-```
+这个项目实现了很多工业级 RAG 的实用特性：
 
-### 3) 创建 `.env` 文件
-在项目根目录新建 `.env`，可直接使用下面模板：
+混合检索：同时做语义稠密向量 + BM25 关键词稀疏向量检索，用 Milvus 混合搜索 + RRF 排序融合结果，兼顾语义理解和关键词匹配
+精排可可视化：召回后接入 Jina 重排序做精排，重排序分数可以直接在前端展示
+稳定性降级：混合检索或者稀疏检索出问题时，会自动降级为纯稠密向量检索，不会整体报错
+原生流式输出：后端逐 token 推送结果，前端用 SSE 实现打字机效果
+RAG 过程实时可视化：模型生成回答前，检索的每一步都会提前展示给用户，不会出现长时间静默等待
+回答随时终止：支持用户随时中断正在生成的回答，后端会立刻停止推理，真正节省 token 和资源
+会话压缩管理：旧对话会自动做摘要，既保留长上下文，又控制 token 数量不超标
+全链路文档处理：从上传、切分、生成向量到入库自动化完成，重复上传会自动清理旧数据
+三级分块 + 自动合并：把文档分成大、中、小三层，检索先召回小块，满足条件后自动合并回父块，既保证检索精度又保留完整上下文
+轻量化存储：仅叶子小块存向量，父块存在本地，减少向量冗余，还保留上下文聚合能力
+工具易扩展：已经做好天气查询示例，新增第三方 API、企业数据源非常方便
+全链路可观测：检索、评分、重写、来源所有信息都记录，前端可以展开查看每一步细节
+智能查询重写：支持 Step-Back、HyDE 两种重写策略，会自动根据情况选择，需要时才重写查询二次检索
+相关性门控：会先判断召回文档的相关性，不够用才触发重写，避免无效计算
+实时思考展示：通过异步技术穿透，Agent 做检索、评分、重写每一步都实时推前端，解决了传统 RAG 的 "静默思考" 问题
+三、目录与核心流程
+目录结构
 
-```env
-# ===== Model =====
-ARK_API_KEY=your_ark_api_key
-MODEL=your_model_name
-BASE_URL=https://your-llm-endpoint/v1
-EMBEDDER=your_embedding_model
+backend/后端：各个文件职责清晰，从入口、接口、Agent、工具、文档处理、向量存储到 Milvus 交互都做了分层
+frontend/前端：三个文件实现整个交互界面，纯静态无需额外构建
+data/：存落地的会话历史、父块数据、上传的原文档
+向量库：Milvus，支持 docker 启动或者自建服务接入
+核心流程
 
-# ===== Rerank (可选，不配则自动降级) =====
-RERANK_MODEL=your_rerank_model
-RERANK_BINDING_HOST=https://your-rerank-host
-RERANK_API_KEY=your_rerank_api_key
+用户问答全链路：用户前端提问→调用流式接口→后端返回 SSE 流→Agent 判断问题类型调用对应工具→知识库检索会实时推送每一步→Agent 流式生成回答推前端→前端打字机展示→对话落盘存历史
+RAG 检索流程：初次召回叶子块→重排序→自动合并父块→相关性打分（合格直接生成，不合格触发重写）→选择重写策略→重写后二次召回→去重后给 Agent 生成回答→全链路信息留存可观测
+文档入库流程：前端上传 PDF/Word→三级分块打标签→父块存本地→叶子块生成两种向量→仅叶子块写入 Milvus→完成入库可被检索
+会话记忆流程：按用户、会话存对话→太长自动摘要压缩→前端支持增删查历史会话
+四、关键技术实现细节
 
-# ===== Milvus =====
-MILVUS_HOST=127.0.0.1
-MILVUS_PORT=19530
-
-# ===== Tools （可选）=====
-AMAP_WEATHER_API=https://restapi.amap.com/v3/weather/weatherInfo
-AMAP_API_KEY=your_amap_api_key
-
-```
-
-### 4) Docker 部署（Milvus 向量库）
-当前仓库的 `docker-compose.yml` 主要用于启动 Milvus 相关组件（`etcd` / `minio` / `standalone` / `attu`）：
-
-```bash
-# 启动向量库依赖
-docker compose up -d
-
-# 查看服务状态
-docker compose ps
-
-# 查看日志（可选）
-docker compose logs -f standalone
-```
-
-端口说明：
-- Milvus：`19530`
-- Milvus 健康检查：`9091`
-- MinIO API：`9000`
-- MinIO Console：`9001`
-- Attu：`8080`
-
-### 5) 启动应用并访问
-在 Milvus 启动后，运行后端应用：
-
-```bash
-uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-浏览器访问：
-- 前端页面：`http://127.0.0.1:8000/`
-- API 文档：`http://127.0.0.1:8000/docs`
-
-## 项目概览
-- **核心能力**：
-  - LangChain Agent + 自定义工具。
-  - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入本地 DocStore。
-  - 会话记忆与摘要，保持长对话上下文。
-- **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库。
-
-## 关键创新点
-- **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配。
-- **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
-- **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
-- **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果。
-- **实时 RAG 过程可视化**：检索过程在模型"思考中"阶段就开始展示，通过 `asyncio.Queue` + 后台任务架构实现工具执行期间的实时推送。
-- **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答。
-- **会话摘要记忆**：自动摘要旧消息并注入系统提示，维持上下文且控制 token。
-- **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
-- **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）。
-- **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
-- **工具可扩展**：天气查询示例 + 知识库检索，便于按需增添第三方 API 或企业数据源。
-- **RAG 过程可观测**：记录检索、评分、重写与来源信息，前端可展开查看每一步细节。
-- **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
-- **相关性评分门控**：基于结构化输出的 `grade_documents` 判断是否需要重写检索。
-- **实时思考链路展示**：通过 `asyncio` 事件循环穿透技术，实现 Agent 在执行 RAG、评分、重写等同步工具时，实时向前端推送思考步骤（Searching -> Grading -> Rewriting），彻底解决"静默思考"问题。
-
-## 目录与架构
-- 后端：`backend/`
-  - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
-  - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
-  - [agent.py](backend/agent.py)：LangChain Agent、会话存储、摘要逻辑。
-  - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
-  - [embedding.py](backend/embedding.py)：稠密向量 API 调用 + BM25 稀疏向量生成。
-  - [document_loader.py](backend/document_loader.py)：PDF/Word 加载与分片。
-  - [parent_chunk_store.py](backend/parent_chunk_store.py)：父级分块 DocStore（用于 Auto-merging 回取父块）。
-  - [milvus_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
-  - [milvus_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索。
-  - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
-- 前端：`frontend/`
-  - [index.html](frontend/index.html) + [script.js](frontend/script.js) + [style.css](frontend/style.css)：Vue 3 + marked + highlight.js，提供聊天、历史会话、文档上传/删除界面。
-- 数据：`data/`
-  - `customer_service_history.json`：会话落盘存储。
-  - `parent_chunks.json`：父级分块存储（L1/L2）。
-  - `documents/`：上传文档原文件。
-- 向量库：Milvus（可由 `docker-compose` 或自建服务提供）。
-
-## 核心流程
-
-### 1) 项目全链路（端到端）
-1. 用户在前端输入问题，调用 `POST /chat/stream`（流式）。
-2. FastAPI `api.py` 返回 `StreamingResponse(media_type="text/event-stream")`。
-3. LangChain Agent 根据问题类型决定是否调用工具：
-  - 天气问题 → `get_current_weather`
-  - 知识问答 → `search_knowledge_base`
-4. 若命中知识库工具，进入 `rag_pipeline.py` 执行检索工作流，各阶段通过 `emit_rag_step()` 实时推送到前端。
-5. 检索结果与 RAG Trace 一起返回，Agent 流式生成最终回答（逐 token 推送）。
-6. 前端 ReadableStream 逐块解析 SSE，打字机效果实时渲染。
-7. 同时消息落盘到 `customer_service_history.json`，支持历史会话回放。
-
-### 2) RAG 全链路（重点）
-1. **初次召回**：`retrieve_initial`
-  - 调用 `retrieve_documents`。
-  - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF）。
-  - 取更大候选集后走 Jina Rerank 精排。
-  - 对召回叶子块执行 Auto-merging（L3->L2->L1），父块从 DocStore 读取。
-2. **相关性打分门控**：`grade_documents`
-  - 使用结构化输出打分 `yes/no`。
-  - `yes` 直接进入生成回答；`no` 进入重写阶段。
-3. **查询重写路由**：`rewrite_question`
-  - 在 `step_back / hyde / complex` 中选择策略。
-  - 生成 `rewrite_query`、`step_back_question`、`hypothetical_doc` 等中间结果。
-4. **二次召回**：`retrieve_expanded`
-  - 对重写后的查询（或 HyDE 文档）再次检索。
-  - 同样执行 L3 召回 + Auto-merging，结果去重后返回上下文。
-5. **答案生成**：Agent 结合上下文生成最终回答。
-6. **可观测追踪**：返回 `rag_trace`，包括
-  - 评分结果与路由决策
-  - 重写策略与重写内容
-  - 初次/二次检索结果
-  - 三级检索与合并信息（`leaf_retrieve_level`、`auto_merge_*`）
-  - 检索分数 `score` 与精排分数 `rerank_score`
-
-### 3) 文档入库链路
-1. 前端上传 PDF/Word 到 `POST /documents/upload`。
-2. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk_id / parent_chunk_id / root_chunk_id / chunk_level）。
-3. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore）。
-4. L3 叶子分块进入 `embedding.py` 生成 Dense 向量与 BM25 Sparse 向量。
-5. `milvus_writer.py` 仅将叶子块向量 + 元数据写入 Milvus。
-5. 后续检索可直接利用新文档参与召回。
-
-### 4) 会话记忆链路
-1. 每轮问答按 `user_id/session_id` 写入本地存储。
-2. 当消息过长时触发摘要压缩，保留长期上下文。
-3. 前端可通过会话接口读取、删除历史对话。
-
-## 技术栈
-- 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn。
-- 向量与检索：Milvus（HNSW 稠密索引 + SPARSE_INVERTED_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
-- 嵌入与稀疏：自定义 API 调用获取稠密向量；BM25 手写稀疏向量；同时输出双塔特征。
-- 前端：Vue 3 (CDN)、marked、highlight.js、纯静态部署。
-- 工具链：dotenv 配置、requests、langchain_text_splitters、langchain_community.loaders。
-
-## 环境变量
-需在仓库根目录或运行环境配置：
-- 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
-- Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
-- Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
-- Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
-- 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
-
-## API 速览
-- `POST /chat`：聊天（非流式），入参 `message`、`user_id`、`session_id`。
-- `POST /chat/stream`：聊天（流式 SSE），入参同上，返回 `text/event-stream`。
-- `GET /sessions/{user_id}`：列出会话。
-- `GET /sessions/{user_id}/{session_id}`：拉取某会话消息。
-- `DELETE /sessions/{user_id}/{session_id}`：删除会话。
-- `GET /documents`：列出已入库文档及 chunk 数。
-- `POST /documents/upload`：上传并向量化 PDF/Word。
-- `DELETE /documents/{filename}`：删除指定文档的向量数据。
-
-## 流式输出与实时检索过程 — 技术细节
-
-#### 1. 跨线程事件调度（Cross-Thread Event Scheduling）
-这是一个解决 **"同步工具阻塞异步事件循环"** 问题的关键架构设计，常用于 Python 异步 Web 服务与 CPU 密集型/IO 密集型任务的混合场景。
-
-**痛点**：
-FastAPI 运行在单线程的 asyncio Event Loop 上。为了不阻塞主线程，LangChain 通常将同步工具（如 `search_knowledge_base`）放到 `ThreadPoolExecutor` 中运行。但在子线程中，无法直接访问主线程的 `asyncio.Queue`，且 `asyncio.get_event_loop()` 通常会失败。
-
-**解决方案**：
-我们采用了 **"Global Loop Capture + Threadsafe Callback"** 模式：
-
-1.  **Loop 捕获 (Main Thread)**:
-    在 Agent 开始生成前，主线程调用 `set_rag_step_queue()`。此时我们捕获当前的运行循环：`_RAG_STEP_LOOP = asyncio.get_running_loop()` 并保存为全局变量。
-2.  **跨线程发射 (Worker Thread)**:
-    当 RAG 工具在子线程运行时，调用 `emit_rag_step()`。
-    函数内部使用 `_RAG_STEP_LOOP.call_soon_threadsafe(queue.put_nowait, step_data)`。
-3.  **原理**:
-    `call_soon_threadsafe` 是 asyncio 唯一允许从其他线程向 Loop 注入回调的方法。它相当于向主 Loop 的"待办事项箱"投递了一个任务（即 `queue.put_nowait`），主 Loop 会在下一次 tick 立即执行它，从而实现数据的平滑流转。
-
-```python
-# 核心代码摘要 (tools.py)
-def set_rag_step_queue(queue):
-    global _RAG_STEP_QUEUE, _RAG_STEP_LOOP
-    _RAG_STEP_QUEUE = queue
-    # 关键：在主线程捕获 Loop
-    _RAG_STEP_LOOP = asyncio.get_running_loop()
-
-def emit_rag_step(icon, label):
-    # 关键：从子线程安全调度回主 Loop
-    if _RAG_STEP_LOOP and not _RAG_STEP_LOOP.is_closed():
-        _RAG_STEP_LOOP.call_soon_threadsafe(
-            _RAG_STEP_QUEUE.put_nowait, 
-            {"icon": icon, "label": label}
-        )
-```
-
-### 2. 混合检索（Hybrid Search）深度实现
-项目并非简单调用 Milvus 接口，而是手动构建了工业级的稀疏-稠密双塔检索：
-
-- **Dense Pathway**: 使用 OpenAI `text-embedding-3-small` 生成 1536 维稠密向量，捕捉语义匹配。
-- **Sparse Pathway**:
-    - 在 `embedding.py` 中实现了基于 `jieba` 分词的自定义 BM25 算法。
-    - 生成 `{word_id: tf_idf_score}` 格式的稀疏向量，模拟 ElasticSearch 的关键词匹配能力。
-- **Milvus 融合**:
-    - 使用 Milvus 的 `AnnSearchRequest` 同时发起两个请求。
-    - **RRFRanker (Reciprocal Rank Fusion)**: 采用 `k=60` 的倒数排名融合算法，将两路召回结果无参数化地合并，避免了加权求和中调节 `alpha` 参数的困难。
-
-### 3. 前端 "Thinking State Machine"
-前端 `script.js` 维护了一个微型状态机来处理通过 SSE 传回的复杂混合流：
-
-1.  **Idle**: 等待用户输入。
-2.  **Thinking (Initial)**: 收到请求，创建消息气泡，`isThinking=true`，显示默认动画。
-3.  **Thinking (Active RAG)**: 收到 `type: rag_step` 事件。
-    - 状态机保持 `isThinking=true`。
-    - 动态更新 Header 文字（如 "正在重写查询..."）。
-    - 向 `ragSteps` 数组追加步骤，触发 Vue 列表渲染。
-4.  **Streaming**: 收到第一个 `type: content` 事件。
-    - **立即切换**: 设置 `isThinking=false`。
-    - 并不销毁气泡，而是隐藏思考 header，开始在同一气泡内追加 Markdown 文本。
-    - 这样实现了从"思考"到"回答"的无缝视觉过渡，没有突兀的 UI 抖动。
-
-## 整体架构
-
-```
-用户发送消息
-    │
-    ▼
-POST /chat/stream → StreamingResponse(text/event-stream)
-    │
-    ▼
-chat_with_agent_stream()
-    │
-    ├── 创建统一输出队列 (asyncio.Queue)
-    ├── 设置 _RagStepProxy → emit_rag_step() 的输出直接入队
-    ├── 启动 _agent_worker 后台任务 (asyncio.create_task)
-    │     └── agent.astream(stream_mode="messages") 逐 token 产出
-    │           ├── AIMessageChunk (文本) → {"type": "content"} 入队
-    │           └── tool_call_chunks (工具调用) → 跳过
-    │
-    └── 主循环：await output_queue.get() → yield SSE
-          ▲
-          │ (并发) RAG 工具在线程池中执行
-          │ emit_rag_step() → loop.call_soon_threadsafe → 入队
-          │ {"type": "rag_step"} 立即从队列取出并推送到前端
-```
-
-### 后端实现
-
-#### 1) 流式生成 (`agent.py`)
-- 使用 LangGraph `agent.astream(stream_mode="messages")` 获取逐 token 的 `AIMessageChunk`。
-- 过滤 `tool_call_chunks`，只转发文本内容给前端。
-- **关键设计**：Agent 流式循环运行在 `asyncio.create_task` 后台任务中，主生成器只负责从统一 `output_queue` 取事件并 yield。这样 RAG 步骤在工具执行期间（agent 阻塞等待工具返回时）仍然可以实时推送到前端。
-
-#### 2) 实时 RAG 步骤推送 (`tools.py` + `rag_pipeline.py`)
-- `emit_rag_step(icon, label, detail)` 通过 `asyncio.get_event_loop().call_soon_threadsafe()` 将步骤从同步线程安全地推送到异步队列。
-- `_RagStepProxy` 代理对象将原始 step dict 包装为 `{"type": "rag_step", "step": {...}}` 后放入统一输出队列，**无需额外 relay 任务**。
-- `rag_pipeline.py` 在每个关键节点发射步骤：
-  - `retrieve_initial` → "正在检索知识库..."
-  - `grade_documents` → "正在评估文档相关性..."
-  - `rewrite_question` → "正在重写查询..."（含策略选择）
-  - `retrieve_expanded` → "使用扩展查询重新检索..."
-
-#### 3) SSE 协议格式
-每个事件格式：`data: {JSON}\n\n`，类型字段：
-- `content`：文本 token（打字机效果）
-- `rag_step`：实时检索步骤（`{icon, label, detail}`）
-- `trace`：完整 RAG 追踪信息（回答完成后发送）
-- `error`：错误信息
-- `[DONE]`：流结束标记
-
-#### 4) StreamingResponse 配置 (`api.py`)
-```python
-StreamingResponse(
-    event_generator(),
-    media_type="text/event-stream",
-    headers={
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
-    },
-)
-```
-
-### 前端实现
-
-#### 1) ReadableStream 解析 (`script.js`)
-- 使用 `response.body.getReader()` + `TextDecoder` 逐块读取。
-- 手动按 `\n\n` 分割 SSE 事件，解析 `data: ` 前缀后的 JSON。
-- `content` 事件追加到消息文本；`rag_step` 事件追加到检索步骤数组并同步更新思考状态文字。
-
-#### 2) 思考气泡二合一
-- 发送消息后立即创建带 `isThinking: true` 的气泡，显示跳动圆点 + 动态文字。
-- 收到 `rag_step` 时，`thinkingLabel` 更新为当前步骤（如"正在检索知识库..."）。
-- 收到第一个 `content` token 时，`isThinking = false`，同一气泡无缝切换为正常文本流。
-- **不存在两个分离的气泡**，从思考 → 检索 → 回答全程在同一个气泡内完成。
-
-#### 3) Vue 3 响应式注意事项
-- 通过 `this.messages[botMsgIdx]` 索引访问（而非缓存对象引用），确保拿到 Vue 的 reactive proxy。
-- `ragSteps` 数组通过 `push()` 触发响应式更新。
-
-### 终止功能
-
-#### 前端
-- 发送按钮在 `isLoading` 期间切换为红色终止按钮（`v-if/v-else`）。
-- 点击调用 `AbortController.abort()`，取消正在进行的 `fetch` 请求。
-- 捕获 `AbortError`，在气泡中显示"(已终止回答)"。
-
-#### 后端
-- FastAPI 的 `StreamingResponse` 在客户端断开连接（如浏览器触发 `abort()` 或关闭标签页）时，会检测到 socket 断开。
-- Python 的生成器协议会向响应生成器抛出 `GeneratorExit` 异常。
-- **实现细节**：采用**主动防御式编程**，显式捕获 `GeneratorExit` 并执行 `agent_task.cancel()`。
-- **为什么不依赖框架自动取消？**：虽然 Starlette/FastAPI 拥有基于 `BaseHTTPMiddleware` 的级联取消机制（Cascading Cancellation），但在复杂的后台任务结构或特定中间件配置下，取消信号可能延迟或在传递链中丢失。显式调用 `.cancel()` 提供了**确定性的资源回收**保证。
-- **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
-
-## 更新日志
-
-### 2026-03-13 三级分块与 Auto-merging 升级
-- 新增三级滑动窗口分块（L1/L2/L3），并为分块写入层级元数据。
-- 存储策略调整为 Leaf-only：仅 L3 叶子块写入 Milvus，L1/L2 写入本地 DocStore。
-- Auto-merging 改为从 DocStore 拉取父块，减少向量冗余存储。
-- 思考链路新增三级检索与自动合并步骤事件。
-- `rag_trace` 新增 `leaf_retrieve_level` 与 `auto_merge_*` 字段，且历史会话读取同样保留这些字段。
-
-### 2026-02-19 RAG 实时思考链路修复
-- **问题**：Agent 在执行同步工具（如 `search_knowledge_base`）时，由于运行在线程池中，无法正确获取主线程的 asyncio 事件循环，导致 `emit_rag_step` 事件丢失，前端"思考中"气泡一直静止。
-- **修复**：
-  1. **Backend (`tools.py`)**：在 `set_rag_step_queue` 中显式捕获主线程的 `loop`。
-  2. **Backend (`tools.py`)**：更新 `emit_rag_step` 使用捕获的 `_RAG_STEP_LOOP.call_soon_threadsafe` 跨线程调度事件。
-  3. **Frontend (`script.js`)**：在发送消息时初始化空的 `ragSteps: []` 数组，确保 Vue 响应式系统能立即追踪后续的 push 操作。
-- **效果**：用户提问后，思考气泡内实时跳动显示检索步骤（如"🔍 正在检索知识库..." -> "📊 正在评估文档相关性..."），不再只有静态的"正在思考中..."。
-
+跨线程实时推送解决阻塞问题：FastAPI 的异步事件循环在主线程，同步 RAG 工具放线程池避免阻塞主线程，项目通过 "主线程提前捕获事件循环 + 线程安全回调" 的方案，实现子线程的 RAG 步骤能实时推给主线程，不会丢消息也不阻塞。
+自研混合检索双塔：不是简单调用 Milvus 接口，自己实现了 BM25 稀疏向量生成，搭配稠密向量，Milvus 同时检索后用 RRF 无参数融合结果，不用人工调权重，效果稳定。
+前端无缝状态切换：前端做了微型状态机，同一个气泡从 "思考→展示检索步骤→输出回答" 无缝切换，不会出现两个气泡跳转的突兀体验。
+确定性终止能力：前端用 AbortController 取消请求，后端显式捕获断开信号，主动取消 Agent 后台任务，立刻停止大模型推理，真正做到节省资源，避免无效计算。
